@@ -96,7 +96,6 @@ func (c *Coordinator) ReportTaskDone(args *ReportTaskDoneArgs, _ *ReportTaskDone
 func (c *Coordinator) fetchMapTask() *MapTask {
 	for _, task := range c.MapTasks {
 		if task.Status == TaskStatus_Idle {
-			task.Status = TaskStatus_InProgress
 			return task
 		}
 	}

@@ -61,9 +61,6 @@ func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 func doMapTask(task *MapTask, mapf func(string, string) []KeyValue) {
-	// read file
-	// call mapf
-	// write intermediate files
 	filename := task.FileName
 	file, err := os.Open(filename)
 	if err != nil {
@@ -110,10 +107,6 @@ func doMapTask(task *MapTask, mapf func(string, string) []KeyValue) {
 }
 
 func doReduceTask(task *ReduceTask, reducef func(string, []string) string) {
-	// read intermediate files
-	// call reducef
-	// write output files
-
 	intermediate := make([]KeyValue, 0)
 	for i := range task.NMap {
 		filename := fmt.Sprintf("mr-%v-%v", i, task.Id) // intermediate file
