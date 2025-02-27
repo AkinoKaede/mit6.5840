@@ -9,11 +9,14 @@ import (
 type Clerk struct {
 	clnt   *tester.Clnt
 	server string
+	id     string
 }
 
 func MakeClerk(clnt *tester.Clnt, server string) kvtest.IKVClerk {
 	ck := &Clerk{clnt: clnt, server: server}
 	// You may add code here.
+	ck.id = kvtest.RandValue(8)
+
 	return ck
 }
 
@@ -67,5 +70,31 @@ func (ck *Clerk) Put(key, value string, version rpc.Tversion) rpc.Err {
 	reply := &rpc.PutReply{}
 
 	_ = ck.clnt.Call(ck.server, "KVServer.Put", args, reply)
+	return reply.Err
+}
+
+func (ck *Clerk) Acquire(key string) rpc.Err {
+	args := &rpc.AcquireArgs{
+		Key:      key,
+		ClientId: ck.id,
+	}
+
+	reply := &rpc.AcquireReply{}
+
+	_ = ck.clnt.Call(ck.server, "KVServer.Acquire", args, reply)
+
+	return reply.Err
+}
+
+func (ck *Clerk) Release(key string) rpc.Err {
+	args := &rpc.ReleaseArgs{
+		Key:      key,
+		ClientId: ck.id,
+	}
+
+	reply := &rpc.ReleaseReply{}
+
+	_ = ck.clnt.Call(ck.server, "KVServer.Release", args, reply)
+
 	return reply.Err
 }

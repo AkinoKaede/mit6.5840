@@ -23,12 +23,15 @@ type KVServer struct {
 
 	// Your definitions here.
 	data map[string]*ValueHandle
+	lock map[string]string // map[l]clientId
 }
 
 func MakeKVServer() *KVServer {
 	kv := &KVServer{}
 	// Your code here.
+
 	kv.data = make(map[string]*ValueHandle)
+	kv.lock = make(map[string]string)
 	return kv
 }
 
@@ -79,6 +82,33 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 			reply.Err = rpc.ErrNoKey
 		}
 	}
+}
+
+func (kv *KVServer) Acquire(args *rpc.AcquireArgs, reply *rpc.AcquireReply) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	reply.Err = rpc.OK
+
+	if id := kv.lock[args.Key]; id != "" {
+		reply.Err = rpc.ErrLocked
+		return
+	}
+
+	kv.lock[args.Key] = args.ClientId
+}
+
+func (kv *KVServer) Release(args *rpc.ReleaseArgs, reply *rpc.ReleaseReply) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	if id := kv.lock[args.Key]; id == args.ClientId {
+		kv.lock[args.Key] = ""
+		reply.Err = rpc.OK
+		return
+	}
+
+	reply.Err = rpc.ErrPermissionDenied
 }
 
 // You can ignore Kill() for this lab
