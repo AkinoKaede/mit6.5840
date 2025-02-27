@@ -73,6 +73,7 @@ func (ck *Clerk) Put(key, value string, version rpc.Tversion) rpc.Err {
 		Version: version,
 	}
 	reply := &rpc.PutReply{}
+
 	retries := 0
 	for {
 		if ok := ck.clnt.Call(ck.server, "KVServer.Put", args, reply); ok {
@@ -94,9 +95,18 @@ func (ck *Clerk) Acquire(key string) rpc.Err {
 
 	reply := &rpc.AcquireReply{}
 
-	_ = ck.clnt.Call(ck.server, "KVServer.Acquire", args, reply)
+	retries := 0
+	for {
+		if ok := ck.clnt.Call(ck.server, "KVServer.Acquire", args, reply); ok {
+			if retries > 0 && reply.Err == rpc.ErrAcquired {
+				return rpc.OK
+			}
 
-	return reply.Err
+			return reply.Err
+		}
+
+		retries++
+	}
 }
 
 func (ck *Clerk) Release(key string) rpc.Err {
@@ -104,10 +114,14 @@ func (ck *Clerk) Release(key string) rpc.Err {
 		Key:      key,
 		ClientId: ck.id,
 	}
-
 	reply := &rpc.ReleaseReply{}
 
-	_ = ck.clnt.Call(ck.server, "KVServer.Release", args, reply)
+	for {
+		ok := ck.clnt.Call(ck.server, "KVServer.Release", args, reply)
+		if ok {
+			break
+		}
+	}
 
 	return reply.Err
 }

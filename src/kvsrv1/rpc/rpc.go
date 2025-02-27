@@ -15,8 +15,9 @@ const (
 	ErrWrongLeader = "ErrWrongLeader"
 	ErrWrongGroup  = "ErrWrongGroup"
 
-	ErrLocked           = "ErrLocked"
-	ErrPermissionDenied = "ErrPermissionDenied"
+	ErrAcquired = "ErrAcquired"
+	ErrReleased = "ErrReleased"
+	ErrDenied   = "ErrDenied"
 )
 
 type Tversion uint64

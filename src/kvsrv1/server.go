@@ -88,27 +88,30 @@ func (kv *KVServer) Acquire(args *rpc.AcquireArgs, reply *rpc.AcquireReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
-	reply.Err = rpc.OK
-
-	if id := kv.lock[args.Key]; id != "" {
-		reply.Err = rpc.ErrLocked
-		return
+	switch kv.lock[args.Key] {
+	case "":
+		kv.lock[args.Key] = args.ClientId
+		reply.Err = rpc.OK
+	case args.ClientId:
+		reply.Err = rpc.ErrAcquired
+	default:
+		reply.Err = rpc.ErrDenied
 	}
-
-	kv.lock[args.Key] = args.ClientId
 }
 
 func (kv *KVServer) Release(args *rpc.ReleaseArgs, reply *rpc.ReleaseReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
-	if id := kv.lock[args.Key]; id == args.ClientId {
+	switch kv.lock[args.Key] {
+	case args.ClientId:
 		kv.lock[args.Key] = ""
 		reply.Err = rpc.OK
-		return
+	case "":
+		reply.Err = rpc.ErrReleased
+	default:
+		reply.Err = rpc.ErrDenied
 	}
-
-	reply.Err = rpc.ErrPermissionDenied
 }
 
 // You can ignore Kill() for this lab
