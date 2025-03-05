@@ -7,13 +7,14 @@ package raft
 // Make() creates a new raft peer that implements the raft interface.
 
 import (
+	"bytes"
 	// "bytes"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	//	"6.5840/labgob"
+	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/raftapi"
 	"6.5840/tester1"
@@ -94,6 +95,15 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// raftstate := w.Bytes()
 	// rf.persister.Save(raftstate, nil)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	if e.Encode(rf.currentTerm) != nil ||
+		e.Encode(rf.voteFor) != nil ||
+		e.Encode(rf.logs) != nil {
+		panic("persist encode failed")
+	}
+
+	rf.persister.Save(w.Bytes(), nil)
 }
 
 // restore previously persisted state.
@@ -114,6 +124,13 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	if d.Decode(&rf.currentTerm) != nil ||
+		d.Decode(&rf.voteFor) != nil || d.Decode(&rf.logs) != nil {
+		panic("failed to decode raft persistent state")
+	}
 }
 
 // how many bytes in Raft's persisted log?
@@ -145,6 +162,7 @@ func (rf *Raft) startElection(fromState State) {
 	}
 
 	rf.toCandidate()
+	rf.persist()
 
 	args := &RequestVoteArgs{
 		Term:         rf.currentTerm,
@@ -169,6 +187,7 @@ func (rf *Raft) startElection(fromState State) {
 
 			if reply.Term > rf.currentTerm {
 				rf.toFollower(reply.Term)
+				rf.persist()
 			}
 
 			rf.mu.Unlock()
@@ -216,6 +235,7 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 
 	reply.Term = rf.currentTerm
 	reply.Success = false
@@ -307,6 +327,7 @@ func (rf *Raft) broadcastAppendEntries() {
 
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
+			defer rf.persist()
 			// not leader or old term
 			if rf.state != State_Leader || args.Term != rf.currentTerm || reply.Term < rf.currentTerm {
 				return
@@ -383,6 +404,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 
 	DPrintf("[%d] Server %d recvied voted request from %d", rf.currentTerm, rf.me, args.CandidateId)
 
@@ -546,6 +568,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	term := rf.currentTerm
 	rf.logs = append(rf.logs, LogEntry{term, command})
+	rf.persist()
 
 	return rf.getLastIndex(), term, true
 }
