@@ -1,115 +1,87 @@
 package shardctrler
 
 //
-// Shardctrler implemented as a clerk.
+// Shardctrler with InitConfig, Query, and ChangeConfigTo methods
 //
 
 import (
 
 	"sync/atomic"
 
-	"6.5840/kvraft1"
 	"6.5840/kvsrv1/rpc"
 	"6.5840/kvtest1"
+	"6.5840/shardkv1/kvsrv1"
 	"6.5840/shardkv1/shardcfg"
 	"6.5840/tester1"
 )
 
-const (
-	ErrDeposed = "ErrDeposed"
-)
 
-
-// The query clerk must support only Query(); it is intended for use
-// by shardkv clerks to read the current configuration (see
-// ../client.go).
-type QueryClerk struct {
+// ShardCtrler for the controller and kv clerk.
+type ShardCtrler struct {
+	clnt *tester.Clnt
 	kvtest.IKVClerk
-	// Your data here.
-}
 
-// Make a query clerk for controller's kvraft group to invoke just
-// Query()
-func MakeQueryClerk(clnt *tester.Clnt, servers []string) *QueryClerk {
-	qck := &QueryClerk{
-		IKVClerk: kvraft.MakeClerk(clnt, servers),
-	}
-	// Your code here.
-	return qck
-}
-
-// Return the current configuration.  You can use Get() to retrieve
-// the string representing the configuration and shardcfg.ToShardCfg
-// to unmarshal the string into a ShardConfig.
-func (qck *QueryClerk) Query() (*shardcfg.ShardConfig, rpc.Tversion) {
-	// Your code here.
-	return nil, 0
-}
-
-// ShardCtrlerClerk for the shard controller. It implements the
-// methods for Init(), Join(), Leave(), etc.
-type ShardCtrlerClerk struct {
-	clnt    *tester.Clnt
-	deposed int32 // set by Stepdown()
+	killed int32 // set by Kill()
+	leases bool
 
 	// Your data here.
 }
 
-// Make a ShardCltlerClerk for the shard controller, which stores its
-// state in a kvraft group.  You can call (and implement) the
-// MakeClerk method in client.go to make a kvraft clerk for the kvraft
-// group with the servers `servers`.
-func MakeShardCtrlerClerk(clnt *tester.Clnt, servers []string) *ShardCtrlerClerk {
-	sck := &ShardCtrlerClerk{clnt: clnt}
+// Make a ShardCltler, which stores its state in a kvsrv.
+func MakeShardCtrler(clnt *tester.Clnt, leases bool) *ShardCtrler {
+	sck := &ShardCtrler{clnt: clnt, leases: leases}
+	srv := tester.ServerName(tester.GRP0, 0)
+	sck.IKVClerk = kvsrv.MakeClerk(clnt, srv)
 	// Your code here.
 	return sck
 }
 
+// The tester calls InitController() before starting a new
+// controller. In this method you can implement recovery (part B) and
+// use a lock to become leader (part C).  InitController may fail when
+// another controller supersedes (e.g., when this controller is
+// partitioned during recovery).
+func (sck *ShardCtrler) InitController() rpc.Err {
+	return rpc.ErrNoKey
+}
+
+// The tester calls ExitController to exit a controller. In part B and
+// C, release lock.
+func (sck *ShardCtrler) ExitController() {
+}
 
 // Called once by the tester to supply the first configuration.  You
 // can marshal ShardConfig into a string using shardcfg.String(), and
-// then Put it in the kvraft group for the controller at version 0.
-// You can pick the key to name the configuration.
-func (sck *ShardCtrlerClerk) Init(cfg *shardcfg.ShardConfig) rpc.Err {
+// then Put it in the kvsrv for the controller at version 0.  You can
+// pick the key to name the configuration.
+func (sck *ShardCtrler) InitConfig(cfg *shardcfg.ShardConfig) {
 	// Your code here
+}
+
+// Called by the tester to ask the controller to change the
+// configuration from the current one to new. It may return an error
+// if this controller is disconnected for a while and another
+// controller takes over in the mean time, as in part C.
+func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) rpc.Err {
 	return rpc.OK
 }
 
-// Add group gid. Use shardcfg.JoinBalance() to compute the new
-// configuration; the supplied `srvrs` are the servers for the new
-// group.  You can find the servers for existing groups in the
-// configuration (which you can retrieve using Query()) and you can
-// make a clerk for a group by calling shardgrp.MakeClerk(sck.clnt,
-// servers), and then invoke its Freeze/InstallShard methods.
-func (sck *ShardCtrlerClerk) Join(gid tester.Tgid, srvs []string) rpc.Err {
-	// Your code here
-	return rpc.ErrNoKey
+// Tester "kills" shardctrler by calling Kill().  For your
+// convenience, we also supply isKilled() method to test killed in
+// loops.
+func (sck *ShardCtrler) Kill() {
+	atomic.StoreInt32(&sck.killed, 1)
 }
 
-// Group gid leaves. You can use shardcfg.LeaveBalance() to compute
-// the new configuration.
-func (sck *ShardCtrlerClerk) Leave(gid tester.Tgid) rpc.Err {
-	// Your code here
-	return rpc.ErrNoKey
-}
-
-// the tester calls Stepdown() to force a ctrler to step down while it
-// is perhaps in the middle of a join/move. for your convenience, we
-// also supply isDeposed() method to test rf.dead in long-running
-// loops
-func (sck *ShardCtrlerClerk) Stepdown() {
-	atomic.StoreInt32(&sck.deposed, 1)
-}
-
-func (sck *ShardCtrlerClerk) isDeposed() bool {
-	z := atomic.LoadInt32(&sck.deposed)
+func (sck *ShardCtrler) isKilled() bool {
+	z := atomic.LoadInt32(&sck.killed)
 	return z == 1
 }
 
 
 // Return the current configuration
-func (sck *ShardCtrlerClerk) Query() (*shardcfg.ShardConfig, rpc.Tversion, rpc.Err) {
+func (sck *ShardCtrler) Query() (*shardcfg.ShardConfig, rpc.Tversion) {
 	// Your code here.
-	return nil, 0, ""
+	return nil, 0
 }
 

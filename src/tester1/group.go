@@ -102,6 +102,10 @@ func (sg *ServerGrp) SrvNames() []string {
 	return sg.servernames
 }
 
+func (sg *ServerGrp) SrvName(i int) string {
+	return sg.servernames[i]
+}
+
 func (sg *ServerGrp) Services() [][]IService {
 	ss := make([][]IService, 0, len(sg.srvs))
 	for _, s := range sg.srvs {
@@ -146,19 +150,19 @@ func (sg *ServerGrp) cleanup() {
 	}
 }
 
-// attach server i to servers listed in to
-// caller must hold cfg.mu
+// attach server i to servers listed in to caller must hold cfg.mu.
 func (sg *ServerGrp) connect(i int, to []int) {
 	//log.Printf("connect peer %d to %v\n", i, to)
 
 	sg.connected[i] = true
 
-	// outgoing socket files
-	sg.srvs[i].connect(to)
+	// connect outgoing end points
+	sg.srvs[i].connect(sg, to)
 
-	// incoming socket files
+	// connect incoming end points to me
 	for j := 0; j < len(to); j++ {
-		if sg.IsConnected(j) {
+		if sg.IsConnected(to[j]) {
+			//log.Printf("connect %d (%v) to %d", to[j], sg.srvs[to[j]].endNames[i], i)
 			endname := sg.srvs[to[j]].endNames[i]
 			sg.net.Enable(endname, true)
 		}
@@ -244,6 +248,7 @@ func (sg *ServerGrp) StartServers() {
 
 // Shutdown a server by isolating it
 func (sg *ServerGrp) ShutdownServer(i int) {
+	//log.Printf("ShutdownServer %v", ServerName(sg.gid, i))
 	sg.disconnect(i, sg.all())
 
 	// disable client connections to the server.
@@ -287,6 +292,19 @@ func (sg *ServerGrp) MakePartition(l int) ([]int, []int) {
 	}
 	p2[len(p2)-1] = l
 	return p1, p2
+}
+
+func (sg *ServerGrp) AllowServersExcept(l int) []int {
+	n := len(sg.srvs) - 1
+	p := make([]int, n)
+	j := 0
+	for i, _ := range sg.srvs {
+		if i != l {
+			p[j] = i
+			j++
+		}
+	}
+	return p
 }
 
 func (sg *ServerGrp) Partition(p1 []int, p2 []int) {

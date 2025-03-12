@@ -1,4 +1,4 @@
-package kvraft
+package kvsrv
 
 import (
 	"6.5840/kvsrv1/rpc"
@@ -8,14 +8,13 @@ import (
 
 
 type Clerk struct {
-	clnt    *tester.Clnt
-	servers []string
-	// You will have to modify this struct.
+	clnt   *tester.Clnt
+	server string
 }
 
-func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
-	ck := &Clerk{clnt: clnt, servers: servers}
-	// You'll have to add code here.
+func MakeClerk(clnt *tester.Clnt, server string) kvtest.IKVClerk {
+	ck := &Clerk{clnt: clnt, server: server}
+	// You may add code here.
 	return ck
 }
 
@@ -23,16 +22,15 @@ func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
 // ErrNoKey if the key does not exist. It keeps trying forever in the
 // face of all other errors.
 //
-// You can send an RPC to server i with code like this:
-// ok := ck.clnt.Call(ck.servers[i], "KVServer.Get", &args, &reply)
+// You can send an RPC with code like this:
+// ok := ck.clnt.Call(ck.server, "KVServer.Get", &args, &reply)
 //
 // The types of args and reply (including whether they are pointers)
 // must match the declared types of the RPC handler function's
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
-
 	// You will have to modify this function.
-	return "", 0, ""
+	return "", 0, rpc.ErrNoKey
 }
 
 // Put updates key with value only if the version in the
@@ -46,13 +44,13 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 // but the response was lost, and the the Clerk doesn't know if
 // the Put was performed or not.
 //
-// You can send an RPC to server i with code like this:
-// ok := ck.clnt.Call(ck.servers[i], "KVServer.Put", &args, &reply)
+// You can send an RPC with code like this:
+// ok := ck.clnt.Call(ck.server, "KVServer.Put", &args, &reply)
 //
 // The types of args and reply (including whether they are pointers)
 // must match the declared types of the RPC handler function's
 // arguments. Additionally, reply must be passed as a pointer.
-func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
+func (ck *Clerk) Put(key, value string, version rpc.Tversion) rpc.Err {
 	// You will have to modify this function.
-	return ""
+	return rpc.ErrNoKey
 }

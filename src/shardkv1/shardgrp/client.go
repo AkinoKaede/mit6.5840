@@ -19,7 +19,7 @@ func MakeClerk(clnt *tester.Clnt, servers []string) *Clerk {
 	return ck
 }
 
-func (ck *Clerk) Get(cid shardcfg.Tnum, key string, n shardcfg.Tnum) (string, rpc.Tversion, rpc.Err) {
+func (ck *Clerk) Get(key string, n shardcfg.Tnum) (string, rpc.Tversion, rpc.Err) {
 	// Your code here
 	return "", 0, ""
 }
@@ -34,5 +34,9 @@ func (ck *Clerk) Freeze(s shardcfg.Tshid, num shardcfg.Tnum) ([]byte, rpc.Err) {
 }
 
 func (ck *Clerk) InstallShard(s shardcfg.Tshid, state []byte, num shardcfg.Tnum) rpc.Err {
+	return ""
+}
+
+func (ck *Clerk) Delete(s shardcfg.Tshid, num shardcfg.Tnum) rpc.Err {
 	return ""
 }

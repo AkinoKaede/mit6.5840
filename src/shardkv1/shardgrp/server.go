@@ -14,10 +14,11 @@ import (
 
 
 type KVServer struct {
-	gid  tester.Tgid
-	me   int
-	dead int32 // set by Kill()
-	rsm  *rsm.RSM
+	gid    tester.Tgid
+	me     int
+	dead   int32 // set by Kill()
+	rsm    *rsm.RSM
+	frozen bool // for testing purposes
 
 }
 
@@ -56,6 +57,11 @@ func (kv *KVServer) InstallShard(args *shardrpc.InstallShardArgs, reply *shardrp
 	// Your code here
 }
 
+// Delete the specified shard.
+func (kv *KVServer) Delete(args *shardrpc.DeleteShardArgs, reply *shardrpc.DeleteShardReply) {
+	// Your code here
+}
+
 // the tester calls Kill() when a KVServer instance won't
 // be needed again. for your convenience, we supply
 // code to set rf.dead (without needing a lock),
@@ -74,9 +80,11 @@ func (kv *KVServer) killed() bool {
 	return z == 1
 }
 
-// StartKVServer() and MakeRSM() must return quickly, so they should
+// StartShardServerGrp starts a server for shardgrp `gid`.
+//
+// StartShardServerGrp() and MakeRSM() must return quickly, so they should
 // start goroutines for any long-running work.
-func StartKVServer(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, persister *tester.Persister, maxraftstate int) []tester.IService {
+func StartServerShardGrp(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, persister *tester.Persister, maxraftstate int) []tester.IService {
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(shardrpc.PutArgs{})

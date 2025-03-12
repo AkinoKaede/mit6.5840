@@ -46,7 +46,9 @@ type RSM struct {
 // servers[] contains the ports of the set of
 // servers that will cooperate via Raft to
 // form the fault-tolerant key/value service.
+//
 // me is the index of the current server in servers[].
+//
 // the k/v server should store snapshots through the underlying Raft
 // implementation, which should call persister.SaveStateAndSnapshot() to
 // atomically save the Raft state along with the snapshot.
@@ -80,8 +82,8 @@ func (rsm *RSM) Raft() raftapi.Raft {
 func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 
 	// Submit creates an Op structure to run a command through Raft;
-	// for example: op := Op{Id: rsm.nextId, Req: req}, where req is
-	// the argument to Submit and rsm.nextId a unique id for the op.
+	// for example: op := Op{Me: rsm.me, Id: id, Req: req}, where req
+	// is the argument to Submit and id is a unique id for the op.
 
 	// your code here
 	return rpc.ErrWrongLeader, nil // i'm dead, try another server.

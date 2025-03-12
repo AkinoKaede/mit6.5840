@@ -5,7 +5,7 @@ import (
 	"6.5840/shardkv1/shardcfg"
 )
 
-// Same as Put in kvsrv1/rpc, but with a configuration number.
+// Same as Put in kvsrv1/rpc, but with a configuration number
 type PutArgs struct {
 	Key     string
 	Value   string
