@@ -538,7 +538,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		if rf.getLogRealIndex(i) == args.LastSnapshotIndex && rf.logs[i].Term == args.LastSnapshotTerm { // have later logs
 			rf.logs = append([]LogEntry{{Term: args.LastSnapshotTerm}}, rf.logs[i+1:]...) // keep later logs
 			go func() {
-				rf.applyCh <- msg
+				rf.sendToApplyCh(msg)
 			}()
 
 			return
@@ -548,7 +548,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	// no later logs, can remove all logs
 	rf.logs = []LogEntry{{Term: args.LastSnapshotTerm}}
 	go func() {
-		rf.applyCh <- msg
+		rf.sendToApplyCh(msg)
 	}()
 
 	return
@@ -730,7 +730,7 @@ func (rf *Raft) applyLogs() {
 			CommandIndex: i,
 		}
 
-		rf.applyCh <- msg
+		rf.sendToApplyCh(msg)
 
 		rf.lastApplied = i
 	}
@@ -804,7 +804,7 @@ func (rf *Raft) ticker() {
 			select {
 			case <-rf.toFollowerCh:
 				DPrintf("[%d] Server %d from leader to follower", rf.currentTerm, rf.me)
-			case <-time.After(time.Duration(35) * time.Millisecond):
+			case <-time.After(time.Duration(30) * time.Millisecond):
 				rf.leaderBroadcast()
 			}
 		case State_Follower:
@@ -829,6 +829,15 @@ func (rf *Raft) ticker() {
 			}
 		}
 	}
+}
+
+func (rf *Raft) sendToApplyCh(msg raftapi.ApplyMsg) {
+	defer func() {
+		if err := recover(); err != nil {
+			DPrintf("applyCh closed")
+		}
+	}()
+	rf.applyCh <- msg
 }
 
 func sendToChannel(ch chan struct{}) {
@@ -858,12 +867,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.voteFor = -1
 	rf.logs = append(rf.logs, LogEntry{Term: 0})
 
-	applyChWithCache := make(chan raftapi.ApplyMsg, 512) // avoid blocking
+	applyChWithCache := make(chan raftapi.ApplyMsg, 5120) // avoid blocking
 	go func() {
 		for msg := range applyChWithCache {
+			if rf.killed() {
+				break
+			}
 			applyCh <- msg
-
-			// DPrintf("[%d] Server %d apply %+v", rf.currentTerm, rf.me, msg)
 		}
 		close(applyCh)
 	}()
