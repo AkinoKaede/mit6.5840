@@ -16,9 +16,9 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Me  int
-	Id  int
-	Req any
+	Me   int
+	Term int
+	Req  any
 }
 
 type OpRep struct {
@@ -47,7 +47,6 @@ type RSM struct {
 	maxraftstate int // snapshot if log grows this big
 	sm           StateMachine
 	// Your definitions here.
-	nextId   int
 	submitCh map[int]chan OpRep
 }
 
@@ -72,7 +71,6 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		maxraftstate: maxraftstate,
 		applyCh:      make(chan raftapi.ApplyMsg),
 		sm:           sm,
-		nextId:       1,
 		submitCh:     make(map[int]chan OpRep),
 	}
 	if !useRaftStateMachine {
@@ -91,12 +89,16 @@ func (rsm *RSM) handleApplyCh() {
 
 		rsm.mu.Lock()
 		if _, isLeader := rsm.rf.GetState(); isLeader {
-			if ch, ok := rsm.submitCh[op.Id]; ok {
-				ch <- OpRep{Rep: rsp}
+			if ch, ok := rsm.submitCh[msg.CommandIndex]; ok {
+				go func(ch chan OpRep) {
+					ch <- OpRep{Rep: rsp}
+				}(ch)
 			}
 		} else {
 			for _, ch := range rsm.submitCh { // downgrade to follower
-				ch <- OpRep{Downgraded: true}
+				go func(ch chan OpRep) {
+					ch <- OpRep{Downgraded: true}
+				}(ch)
 			}
 		}
 		rsm.mu.Unlock()
@@ -105,7 +107,9 @@ func (rsm *RSM) handleApplyCh() {
 	// shutdown
 	rsm.mu.Lock()
 	for _, ch := range rsm.submitCh {
-		ch <- OpRep{Downgraded: true}
+		go func(ch chan OpRep) {
+			ch <- OpRep{Downgraded: true}
+		}(ch)
 	}
 	rsm.mu.Unlock()
 }
@@ -124,14 +128,11 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 	// is the argument to Submit and id is a unique id for the op.
 
 	// your code here
-	rsm.mu.Lock()
-	id := rsm.nextId
-	rsm.nextId++
-	rsm.mu.Unlock()
-	op := Op{Me: rsm.me, Id: id, Req: req}
+	op := Op{Me: rsm.me, Req: req}
 
 	// Submit the operation to Raft
-	_, _, isLeader := rsm.rf.Start(op)
+	id, _, isLeader := rsm.rf.Start(op)
+
 	if !isLeader {
 		return rpc.ErrWrongLeader, nil // i'm dead, try another server.
 	}
