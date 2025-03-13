@@ -16,9 +16,8 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Me   int
-	Term int
-	Req  any
+	Me  int
+	Req any
 }
 
 type OpRep struct {
@@ -47,7 +46,8 @@ type RSM struct {
 	maxraftstate int // snapshot if log grows this big
 	sm           StateMachine
 	// Your definitions here.
-	submitCh map[int]chan OpRep
+	submitCh        map[int]chan OpRep
+	maxAppliedIndex int
 }
 
 // servers[] contains the ports of the set of
@@ -73,45 +73,95 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		sm:           sm,
 		submitCh:     make(map[int]chan OpRep),
 	}
+
+	// read snapshot
+	snapshot := persister.ReadSnapshot()
+	if snapshot != nil && len(snapshot) > 0 {
+		rsm.sm.Restore(snapshot)
+	}
+
 	if !useRaftStateMachine {
 		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
 	}
 
-	go rsm.handleApplyCh()
+	go rsm.mainLoop()
 
 	return rsm
 }
 
-func (rsm *RSM) handleApplyCh() {
+func (rsm *RSM) mainLoop() {
 	for msg := range rsm.applyCh {
-		op := msg.Command.(Op)
-		rsp := rsm.sm.DoOp(op.Req) // do the operation
-
-		rsm.mu.Lock()
-		if _, isLeader := rsm.rf.GetState(); isLeader {
-			if ch, ok := rsm.submitCh[msg.CommandIndex]; ok {
-				go func(ch chan OpRep) {
-					ch <- OpRep{Rep: rsp}
-				}(ch)
-			}
-		} else {
-			for _, ch := range rsm.submitCh { // downgrade to follower
-				go func(ch chan OpRep) {
-					ch <- OpRep{Downgraded: true}
-				}(ch)
-			}
+		if msg.CommandValid {
+			rsm.handleCommand(msg)
+		} else if msg.SnapshotValid {
+			rsm.handleSnapshot(msg)
 		}
-		rsm.mu.Unlock()
+	}
+}
+
+func (rsm *RSM) handleCommand(msg raftapi.ApplyMsg) {
+	rsm.mu.Lock()
+	if msg.CommandIndex <= rsm.maxAppliedIndex {
+		return // Already applied this command
 	}
 
-	// shutdown
+	op := msg.Command.(Op)
+	rsp := rsm.sm.DoOp(op.Req) // Execute the operation on state machine
+	rsm.maxAppliedIndex = msg.CommandIndex
+
+	if _, isLeader := rsm.rf.GetState(); isLeader {
+		// If we're the leader, notify the client waiting for this command
+		if ch, ok := rsm.submitCh[msg.CommandIndex]; ok {
+			ch <- OpRep{Rep: rsp}
+		}
+	} else {
+		// If we're no longer the leader, notify all waiting clients
+		rsm.notifyDowngrade()
+	}
+
+	rsm.mu.Unlock()
+
+	// Check if we need to create a snapshot
+	if rsm.maxraftstate != -1 && rsm.rf.PersistBytes() > rsm.maxraftstate {
+		rsm.createSnapshot(msg.CommandIndex)
+	}
+}
+
+func (rsm *RSM) handleSnapshot(msg raftapi.ApplyMsg) {
 	rsm.mu.Lock()
+	defer rsm.mu.Unlock()
+
+	if msg.SnapshotIndex <= rsm.maxAppliedIndex {
+		return // Already applied this snapshot
+	}
+	// Restore state from snapshot
+	rsm.sm.Restore(msg.Snapshot)
+	rsm.maxAppliedIndex = msg.SnapshotIndex
+
+	// Notify clients with indices <= snapshotIndex that they need to retry
+	for id, ch := range rsm.submitCh {
+		if id <= msg.SnapshotIndex {
+			go func(ch chan OpRep) {
+				ch <- OpRep{Downgraded: true}
+			}(ch)
+		}
+	}
+}
+
+func (rsm *RSM) notifyDowngrade() {
 	for _, ch := range rsm.submitCh {
 		go func(ch chan OpRep) {
 			ch <- OpRep{Downgraded: true}
 		}(ch)
 	}
-	rsm.mu.Unlock()
+}
+
+func (rsm *RSM) createSnapshot(index int) {
+	rsm.mu.Lock()
+	defer rsm.mu.Unlock()
+
+	snapshot := rsm.sm.Snapshot()
+	rsm.rf.Snapshot(index, snapshot)
 }
 
 func (rsm *RSM) Raft() raftapi.Raft {
@@ -143,12 +193,13 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 	rsm.submitCh[id] = ch
 	rsm.mu.Unlock()
 
-	rsp := <-ch
+	defer func() {
+		rsm.mu.Lock()
+		delete(rsm.submitCh, id)
+		rsm.mu.Unlock()
+	}()
 
-	// remove
-	rsm.mu.Lock()
-	delete(rsm.submitCh, id)
-	rsm.mu.Unlock()
+	rsp := <-ch
 
 	if rsp.Downgraded {
 		return rpc.ErrWrongLeader, nil // downgrade to follower

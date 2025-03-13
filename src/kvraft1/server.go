@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"sync"
 	"sync/atomic"
 
@@ -33,6 +34,9 @@ type ValueHandle struct {
 // https://go.dev/tour/methods/15
 func (kv *KVServer) DoOp(req any) any {
 	// Your code here
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
 	switch v := req.(type) {
 	case rpc.GetArgs:
 		return kv.doGet(v)
@@ -81,11 +85,29 @@ func (kv *KVServer) doPut(args rpc.PutArgs) (reply rpc.PutReply) {
 
 func (kv *KVServer) Snapshot() []byte {
 	// Your code here
-	return nil
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	if e.Encode(kv.data) != nil {
+		panic("Snapshot failed")
+	}
+	return w.Bytes()
 }
 
 func (kv *KVServer) Restore(data []byte) {
 	// Your code here
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	// clear the old data
+	kv.data = make(map[string]*ValueHandle)
+	if d.Decode(&kv.data) != nil {
+		panic("Restore failed")
+	}
 }
 
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
@@ -138,6 +160,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, persist
 	labgob.Register(rsm.Op{})
 	labgob.Register(rpc.PutArgs{})
 	labgob.Register(rpc.GetArgs{})
+	labgob.Register(ValueHandle{})
 
 	kv := &KVServer{me: me}
 
