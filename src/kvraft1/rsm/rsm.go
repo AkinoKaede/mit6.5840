@@ -8,18 +8,24 @@ import (
 	"6.5840/raft1"
 	"6.5840/raftapi"
 	"6.5840/tester1"
-
 )
 
 var useRaftStateMachine bool // to plug in another raft besided raft1
-
 
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Me  int
+	Id  int
+	Req any
 }
 
+type OpRep struct {
+	Downgraded bool
+
+	Rep any
+}
 
 // A server (i.e., ../server.go) that wants to replicate itself calls
 // MakeRSM and must implement the StateMachine interface.  This
@@ -41,6 +47,8 @@ type RSM struct {
 	maxraftstate int // snapshot if log grows this big
 	sm           StateMachine
 	// Your definitions here.
+	nextId   int
+	submitCh map[int]chan OpRep
 }
 
 // servers[] contains the ports of the set of
@@ -64,17 +72,47 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		maxraftstate: maxraftstate,
 		applyCh:      make(chan raftapi.ApplyMsg),
 		sm:           sm,
+		nextId:       1,
+		submitCh:     make(map[int]chan OpRep),
 	}
 	if !useRaftStateMachine {
 		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
 	}
+
+	go rsm.handleApplyCh()
+
 	return rsm
+}
+
+func (rsm *RSM) handleApplyCh() {
+	for msg := range rsm.applyCh {
+		op := msg.Command.(Op)
+		rsp := rsm.sm.DoOp(op.Req) // do the operation
+
+		rsm.mu.Lock()
+		if _, isLeader := rsm.rf.GetState(); isLeader {
+			if ch, ok := rsm.submitCh[op.Id]; ok {
+				ch <- OpRep{Rep: rsp}
+			}
+		} else {
+			for _, ch := range rsm.submitCh { // downgrade to follower
+				ch <- OpRep{Downgraded: true}
+			}
+		}
+		rsm.mu.Unlock()
+	}
+
+	// shutdown
+	rsm.mu.Lock()
+	for _, ch := range rsm.submitCh {
+		ch <- OpRep{Downgraded: true}
+	}
+	rsm.mu.Unlock()
 }
 
 func (rsm *RSM) Raft() raftapi.Raft {
 	return rsm.rf
 }
-
 
 // Submit a command to Raft, and wait for it to be committed.  It
 // should return ErrWrongLeader if client should find new leader and
@@ -86,5 +124,34 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 	// is the argument to Submit and id is a unique id for the op.
 
 	// your code here
-	return rpc.ErrWrongLeader, nil // i'm dead, try another server.
+	rsm.mu.Lock()
+	id := rsm.nextId
+	rsm.nextId++
+	rsm.mu.Unlock()
+	op := Op{Me: rsm.me, Id: id, Req: req}
+
+	// Submit the operation to Raft
+	_, _, isLeader := rsm.rf.Start(op)
+	if !isLeader {
+		return rpc.ErrWrongLeader, nil // i'm dead, try another server.
+	}
+
+	// Wait for the operation to be committed
+	ch := make(chan OpRep)
+	rsm.mu.Lock()
+	rsm.submitCh[id] = ch
+	rsm.mu.Unlock()
+
+	rsp := <-ch
+
+	// remove
+	rsm.mu.Lock()
+	delete(rsm.submitCh, id)
+	rsm.mu.Unlock()
+
+	if rsp.Downgraded {
+		return rpc.ErrWrongLeader, nil // downgrade to follower
+	}
+
+	return rpc.OK, rsp.Rep
 }

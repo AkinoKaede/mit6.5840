@@ -776,6 +776,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
+	close(rf.applyCh)
 }
 
 func (rf *Raft) killed() bool {
@@ -857,13 +858,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.voteFor = -1
 	rf.logs = append(rf.logs, LogEntry{Term: 0})
 
-	applyChWithCache := make(chan raftapi.ApplyMsg, 64) // avoid blocking
+	applyChWithCache := make(chan raftapi.ApplyMsg, 512) // avoid blocking
 	go func() {
 		for msg := range applyChWithCache {
 			applyCh <- msg
 
 			// DPrintf("[%d] Server %d apply %+v", rf.currentTerm, rf.me, msg)
 		}
+		close(applyCh)
 	}()
 
 	rf.applyCh = applyChWithCache
