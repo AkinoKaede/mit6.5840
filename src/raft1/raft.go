@@ -175,7 +175,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	defer rf.mu.Unlock()
 
 	if rf.lastSnapshotIndex >= index || // have snapshot
-		index >= rf.lastApplied { // not applied
+		index > rf.lastApplied { // not applied
 		return // skip
 	}
 
@@ -337,8 +337,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		lastIndex = rf.getLastIndex()
 
 		rf.commitIndex = min(args.LeaderCommit, lastIndex) // in paper figure 2 AppendEntries RPC (5)
-
-		go rf.applyLogs() // apply logs
 	}
 }
 
@@ -401,7 +399,6 @@ func (rf *Raft) handleAppendEntries(server int, args *AppendEntriesArgs) {
 
 		if count > len(rf.peers)/2 {
 			rf.commitIndex = n
-			go rf.applyLogs()
 			break
 		}
 	}
@@ -537,19 +534,14 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	for i := 1; i <= len(rf.logs); i++ {
 		if rf.getLogRealIndex(i) == args.LastSnapshotIndex && rf.logs[i].Term == args.LastSnapshotTerm { // have later logs
 			rf.logs = append([]LogEntry{{Term: args.LastSnapshotTerm}}, rf.logs[i+1:]...) // keep later logs
-			go func() {
-				rf.applyCh <- msg
-			}()
-
+			rf.sendToApplyCh(msg)
 			return
 		}
 	}
 
 	// no later logs, can remove all logs
 	rf.logs = []LogEntry{{Term: args.LastSnapshotTerm}}
-	go func() {
-		rf.applyCh <- msg
-	}()
+	rf.sendToApplyCh(msg)
 
 	return
 }
@@ -592,7 +584,6 @@ func (rf *Raft) handleInstallSnapshot(server int, args *InstallSnapshotArgs) {
 
 		if count > len(rf.peers)/2 {
 			rf.commitIndex = n
-			go rf.applyLogs()
 			break
 		}
 	}
@@ -723,6 +714,12 @@ func (rf *Raft) applyLogs() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	defer func() {
+		if err := recover(); err != nil {
+			DPrintf("[%d] Server %d rf.applyCh closed", rf.currentTerm, rf.me)
+		}
+	}()
+
 	for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 		msg := raftapi.ApplyMsg{
 			CommandValid: true,
@@ -730,9 +727,21 @@ func (rf *Raft) applyLogs() {
 			CommandIndex: i,
 		}
 
-		rf.applyCh <- msg
+		select {
+		case rf.applyCh <- msg:
+		default:
+			return // avoid blocking
+		}
 
 		rf.lastApplied = i
+	}
+}
+
+func (rf *Raft) applier() {
+	for !rf.killed() {
+		rf.applyLogs()
+
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -776,6 +785,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
+	close(rf.applyCh)
 }
 
 func (rf *Raft) killed() bool {
@@ -797,13 +807,13 @@ func (rf *Raft) ticker() {
 		rf.mu.Lock()
 		state := rf.state
 		rf.mu.Unlock()
-
+		rf.applyLogs()
 		switch state {
 		case State_Leader:
 			select {
 			case <-rf.toFollowerCh:
 				DPrintf("[%d] Server %d from leader to follower", rf.currentTerm, rf.me)
-			case <-time.After(time.Duration(35) * time.Millisecond):
+			case <-time.After(time.Duration(33) * time.Millisecond):
 				rf.leaderBroadcast()
 			}
 		case State_Follower:
@@ -830,6 +840,15 @@ func (rf *Raft) ticker() {
 	}
 }
 
+func (rf *Raft) sendToApplyCh(msg raftapi.ApplyMsg) {
+	defer func() {
+		if err := recover(); err != nil {
+			DPrintf("[%d] Server %d rf.applyCh closed", rf.currentTerm, rf.me)
+		}
+	}()
+	rf.applyCh <- msg
+}
+
 func sendToChannel(ch chan struct{}) {
 	select {
 	case ch <- struct{}{}:
@@ -854,19 +873,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (3A, 3B, 3C).
+	labgob.Register(PersistentStatus{})
 	rf.voteFor = -1
 	rf.logs = append(rf.logs, LogEntry{Term: 0})
 
-	applyChWithCache := make(chan raftapi.ApplyMsg, 64) // avoid blocking
-	go func() {
-		for msg := range applyChWithCache {
-			applyCh <- msg
-
-			// DPrintf("[%d] Server %d apply %+v", rf.currentTerm, rf.me, msg)
-		}
-	}()
-
-	rf.applyCh = applyChWithCache
+	rf.applyCh = applyCh
 	rf.recvCh = make(chan struct{})
 	rf.toLeaderCh = make(chan struct{})
 	rf.toFollowerCh = make(chan struct{})
@@ -876,6 +887,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
+	// go rf.applier()
 
 	return rf
 }
