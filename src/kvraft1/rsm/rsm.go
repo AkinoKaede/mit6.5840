@@ -5,9 +5,9 @@ import (
 
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labrpc"
-	"6.5840/raft1"
+	raft "6.5840/raft1"
 	"6.5840/raftapi"
-	"6.5840/tester1"
+	tester "6.5840/tester1"
 )
 
 var useRaftStateMachine bool // to plug in another raft besided raft1
@@ -16,9 +16,8 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Me   int
-	Term int
-	Req  any
+	Me  int
+	Req any
 }
 
 type OpRep struct {
@@ -48,6 +47,7 @@ type RSM struct {
 	sm           StateMachine
 	// Your definitions here.
 	submitCh map[int]chan OpRep
+	dead     bool // set to true when applyCh is closed
 }
 
 // servers[] contains the ports of the set of
@@ -73,45 +73,89 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		sm:           sm,
 		submitCh:     make(map[int]chan OpRep),
 	}
+
+	// read snapshot
+	snapshot := persister.ReadSnapshot()
+	if snapshot != nil && len(snapshot) > 0 {
+		rsm.sm.Restore(snapshot)
+	}
+
 	if !useRaftStateMachine {
 		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
 	}
 
-	go rsm.handleApplyCh()
+	go rsm.mainLoop()
 
 	return rsm
 }
 
-func (rsm *RSM) handleApplyCh() {
+func (rsm *RSM) mainLoop() {
 	for msg := range rsm.applyCh {
-		op := msg.Command.(Op)
-		rsp := rsm.sm.DoOp(op.Req) // do the operation
-
-		rsm.mu.Lock()
-		if _, isLeader := rsm.rf.GetState(); isLeader {
-			if ch, ok := rsm.submitCh[msg.CommandIndex]; ok {
-				go func(ch chan OpRep) {
-					ch <- OpRep{Rep: rsp}
-				}(ch)
-			}
-		} else {
-			for _, ch := range rsm.submitCh { // downgrade to follower
-				go func(ch chan OpRep) {
-					ch <- OpRep{Downgraded: true}
-				}(ch)
-			}
+		if msg.CommandValid {
+			rsm.handleCommand(msg)
+		} else if msg.SnapshotValid {
+			rsm.handleSnapshot(msg)
 		}
-		rsm.mu.Unlock()
+	}
+	// Raft has been killed and closed applyCh, notify all waiting Submit calls
+	rsm.mu.Lock()
+	rsm.dead = true
+	rsm.notifyDowngrade()
+	rsm.mu.Unlock()
+}
+
+func (rsm *RSM) handleCommand(msg raftapi.ApplyMsg) {
+	rsm.mu.Lock()
+	defer rsm.mu.Unlock()
+
+	op := msg.Command.(Op)
+	rsp := rsm.sm.DoOp(op.Req) // Execute the operation on state machine
+
+	if _, isLeader := rsm.rf.GetState(); isLeader {
+		// If we're the leader, notify the client waiting for this command
+		if ch, ok := rsm.submitCh[msg.CommandIndex]; ok {
+			ch <- OpRep{Rep: rsp}
+		}
+	} else {
+		// If we're no longer the leader, notify all waiting clients
+		rsm.notifyDowngrade()
 	}
 
-	// shutdown
-	rsm.mu.Lock()
-	for _, ch := range rsm.submitCh {
-		go func(ch chan OpRep) {
-			ch <- OpRep{Downgraded: true}
-		}(ch)
+	// rsm.mu.Unlock()
+
+	// Check if we need to create a snapshot
+	if rsm.maxraftstate != -1 && rsm.rf.PersistBytes() > rsm.maxraftstate {
+		rsm.createSnapshot(msg.CommandIndex)
 	}
-	rsm.mu.Unlock()
+}
+
+func (rsm *RSM) handleSnapshot(msg raftapi.ApplyMsg) {
+	rsm.mu.Lock()
+	defer rsm.mu.Unlock()
+
+	// Restore state from snapshot
+	rsm.sm.Restore(msg.Snapshot)
+
+	// Only followers may receive snapshots
+	rsm.notifyDowngrade()
+}
+
+func (rsm *RSM) notifyDowngrade() {
+	for _, ch := range rsm.submitCh {
+		select {
+		case ch <- OpRep{Downgraded: true}:
+		default:
+			// Channel already has a message or is full
+		}
+	}
+}
+
+func (rsm *RSM) createSnapshot(index int) {
+	// rsm.mu.Lock()
+	// defer rsm.mu.Unlock()
+
+	snapshot := rsm.sm.Snapshot()
+	rsm.rf.Snapshot(index, snapshot)
 }
 
 func (rsm *RSM) Raft() raftapi.Raft {
@@ -128,6 +172,13 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 	// is the argument to Submit and id is a unique id for the op.
 
 	// your code here
+	rsm.mu.Lock()
+	if rsm.dead {
+		rsm.mu.Unlock()
+		return rpc.ErrWrongLeader, nil
+	}
+	rsm.mu.Unlock()
+
 	op := Op{Me: rsm.me, Req: req}
 
 	// Submit the operation to Raft
@@ -138,17 +189,22 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 	}
 
 	// Wait for the operation to be committed
-	ch := make(chan OpRep)
+	ch := make(chan OpRep, 1) // buffered channel to avoid blocking notifyDowngrade
 	rsm.mu.Lock()
+	if rsm.dead {
+		rsm.mu.Unlock()
+		return rpc.ErrWrongLeader, nil
+	}
 	rsm.submitCh[id] = ch
 	rsm.mu.Unlock()
 
-	rsp := <-ch
+	defer func() {
+		rsm.mu.Lock()
+		delete(rsm.submitCh, id)
+		rsm.mu.Unlock()
+	}()
 
-	// remove
-	rsm.mu.Lock()
-	delete(rsm.submitCh, id)
-	rsm.mu.Unlock()
+	rsp := <-ch
 
 	if rsp.Downgraded {
 		return rpc.ErrWrongLeader, nil // downgrade to follower

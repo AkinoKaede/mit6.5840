@@ -1,25 +1,38 @@
 package kvraft
 
 import (
+	"crypto/rand"
+	"math/big"
 	"sync"
 	"time"
 
 	"6.5840/kvsrv1/rpc"
-	"6.5840/kvtest1"
-	"6.5840/tester1"
+	kvtest "6.5840/kvtest1"
+	tester "6.5840/tester1"
 )
 
 type Clerk struct {
 	clnt    *tester.Clnt
 	servers []string
 	// You will have to modify this struct.
-	mu     sync.Mutex
-	leader string // cache the leader
+	mu       sync.Mutex
+	leader   string // cache the leader
+	clientId int64  // unique client ID
+	seqNum   int64  // sequence number for requests
+}
+
+func nrand() int64 {
+	max := big.NewInt(int64(1) << 62)
+	bigx, _ := rand.Int(rand.Reader, max)
+	x := bigx.Int64()
+	return x
 }
 
 func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
 	ck := &Clerk{clnt: clnt, servers: servers}
 	// You'll have to add code here.
+	ck.clientId = nrand()
+	ck.seqNum = 0
 	return ck
 }
 
@@ -116,7 +129,16 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 	// You will have to modify this function.
-	args := rpc.PutArgs{Key: key, Value: value, Version: version}
+	ck.mu.Lock()
+	ck.seqNum++
+	seqNum := ck.seqNum
+	ck.mu.Unlock()
+
+	args := PutArgs{
+		PutArgs:  rpc.PutArgs{Key: key, Value: value, Version: version},
+		ClientId: ck.clientId,
+		SeqNum:   seqNum,
+	}
 	reply := rpc.PutReply{}
 
 	retries := ck.Call("KVServer.Put", &args, &reply)

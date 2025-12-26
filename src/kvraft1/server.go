@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"sync"
 	"sync/atomic"
 
@@ -8,7 +9,7 @@ import (
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labgob"
 	"6.5840/labrpc"
-	"6.5840/tester1"
+	tester "6.5840/tester1"
 )
 
 type KVServer struct {
@@ -17,13 +18,22 @@ type KVServer struct {
 	rsm  *rsm.RSM
 
 	// Your definitions here.
-	mu   sync.Mutex
-	data map[string]*ValueHandle
+	mu         sync.Mutex
+	data       map[string]*ValueHandle
+	lastSeqNum map[int64]int64        // clientId -> last processed seqNum
+	lastReply  map[int64]rpc.PutReply // clientId -> last reply for that seqNum
 }
 
 type ValueHandle struct {
 	Value   string
 	Version rpc.Tversion
+}
+
+// PutOp wraps PutArgs with client identification for deduplication
+type PutOp struct {
+	rpc.PutArgs
+	ClientId int64
+	SeqNum   int64
 }
 
 // To type-cast req to the right type, take a look at Go's type switches or type
@@ -33,11 +43,14 @@ type ValueHandle struct {
 // https://go.dev/tour/methods/15
 func (kv *KVServer) DoOp(req any) any {
 	// Your code here
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
 	switch v := req.(type) {
 	case rpc.GetArgs:
 		return kv.doGet(v)
-	case rpc.PutArgs:
-		return kv.doPut(v)
+	case PutOp:
+		return kv.doPutWithDedup(v)
 	}
 
 	return nil
@@ -79,13 +92,64 @@ func (kv *KVServer) doPut(args rpc.PutArgs) (reply rpc.PutReply) {
 	return
 }
 
+func (kv *KVServer) doPutWithDedup(op PutOp) (reply rpc.PutReply) {
+	// Check for duplicate request
+	if lastSeq, ok := kv.lastSeqNum[op.ClientId]; ok && op.SeqNum <= lastSeq {
+		// This is a duplicate request, return cached reply
+		if cachedReply, ok := kv.lastReply[op.ClientId]; ok {
+			return cachedReply
+		}
+	}
+
+	// Execute the operation
+	reply = kv.doPut(op.PutArgs)
+
+	// Cache the result for deduplication
+	kv.lastSeqNum[op.ClientId] = op.SeqNum
+	kv.lastReply[op.ClientId] = reply
+
+	return
+}
+
 func (kv *KVServer) Snapshot() []byte {
 	// Your code here
-	return nil
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	if e.Encode(kv.data) != nil {
+		panic("Snapshot failed: data")
+	}
+	if e.Encode(kv.lastSeqNum) != nil {
+		panic("Snapshot failed: lastSeqNum")
+	}
+	if e.Encode(kv.lastReply) != nil {
+		panic("Snapshot failed: lastReply")
+	}
+	return w.Bytes()
 }
 
 func (kv *KVServer) Restore(data []byte) {
 	// Your code here
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	// clear the old data
+	kv.data = make(map[string]*ValueHandle)
+	kv.lastSeqNum = make(map[int64]int64)
+	kv.lastReply = make(map[int64]rpc.PutReply)
+	if d.Decode(&kv.data) != nil {
+		panic("Restore failed: data")
+	}
+	if d.Decode(&kv.lastSeqNum) != nil {
+		panic("Restore failed: lastSeqNum")
+	}
+	if d.Decode(&kv.lastReply) != nil {
+		panic("Restore failed: lastReply")
+	}
 }
 
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
@@ -100,16 +164,28 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	}
 }
 
-func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
+func (kv *KVServer) Put(args *PutArgs, reply *rpc.PutReply) {
 	// Your code here. Use kv.rsm.Submit() to submit args
 	// You can use go's type casts to turn the any return value
 	// of Submit() into a PutReply: rep.(rpc.PutReply)
-	err, rep := kv.rsm.Submit(*args)
+	op := PutOp{
+		PutArgs:  args.PutArgs,
+		ClientId: args.ClientId,
+		SeqNum:   args.SeqNum,
+	}
+	err, rep := kv.rsm.Submit(op)
 	if err == rpc.OK {
 		*reply = rep.(rpc.PutReply)
 	} else {
 		reply.Err = err
 	}
+}
+
+// PutArgs wraps rpc.PutArgs with client identification for deduplication
+type PutArgs struct {
+	rpc.PutArgs
+	ClientId int64
+	SeqNum   int64
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -136,13 +212,17 @@ func StartKVServer(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, persist
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(rsm.Op{})
-	labgob.Register(rpc.PutArgs{})
+	labgob.Register(PutOp{})
 	labgob.Register(rpc.GetArgs{})
+	labgob.Register(ValueHandle{})
 
 	kv := &KVServer{me: me}
 
-	kv.rsm = rsm.MakeRSM(servers, me, persister, maxraftstate, kv)
-	// You may need initialization code here.
+	// Initialize maps BEFORE MakeRSM, since MakeRSM may call Restore()
 	kv.data = make(map[string]*ValueHandle)
+	kv.lastSeqNum = make(map[int64]int64)
+	kv.lastReply = make(map[int64]rpc.PutReply)
+
+	kv.rsm = rsm.MakeRSM(servers, me, persister, maxraftstate, kv)
 	return []tester.IService{kv, kv.rsm.Raft()}
 }
